@@ -1,3 +1,5 @@
+
+
 package com.jason.dailyfire
 
 import android.content.Context
@@ -15,6 +17,7 @@ import android.text.TextPaint
 import android.view.LayoutInflater
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -89,7 +92,6 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.ceil
 import kotlin.math.max
 
 class MainActivity : ComponentActivity() {
@@ -119,10 +121,35 @@ fun DailyFireApp() {
     var webUrl by remember { mutableStateOf<String?>(null) }
     var current by remember { mutableStateOf(media.randomOrNull()) }
 
-    LaunchedEffect(media.size) {
+    // Queue of unwatched media URI strings.
+    // This makes shuffle feel random, but prevents repeats until everything has played once.
+    var remainingShuffleQueue by remember {
+        mutableStateOf(
+            media
+                .filter { it.uri != current?.uri }
+                .shuffled()
+                .map { it.uri.toString() }
+        )
+    }
+
+    LaunchedEffect(media.map { it.uri.toString() }) {
         if (current == null && media.isNotEmpty()) {
             current = media.random()
         }
+
+        val validUris = media.map { it.uri.toString() }.toSet()
+        val currentUri = current?.uri?.toString()
+
+        remainingShuffleQueue = remainingShuffleQueue
+            .filter { it in validUris && it != currentUri }
+
+        val queued = remainingShuffleQueue.toSet()
+        val newUnqueuedItems = media
+            .filter { it.uri.toString() !in queued && it.uri.toString() != currentUri }
+            .map { it.uri.toString() }
+            .shuffled()
+
+        remainingShuffleQueue = remainingShuffleQueue + newUnqueuedItems
     }
 
     val picker = rememberLauncherForActivityResult(
@@ -163,9 +190,14 @@ fun DailyFireApp() {
                             }
 
                             val cleanTitle = title.ifBlank { source }
-                            val cleanText = text
-                                .replace(Regex("\\n{3,}"), "\n\n")
-                                .trim()
+
+                            val cleanText = if (source == "AA Daily Reflections") {
+                                cleanAaDailyReflection(text)
+                            } else {
+                                text
+                                    .replace(Regex("\\n{3,}"), "\n\n")
+                                    .trim()
+                            }
 
                             if (cleanText.isNotBlank()) {
                                 val reading = SavedReading(
@@ -186,9 +218,9 @@ fun DailyFireApp() {
                     selectedTab == Tab.Home -> HomeScreen(
                         media = current,
                         onShuffle = {
-                            if (media.isNotEmpty()) {
-                                current = randomDifferent(media, current)
-                            }
+                            val next = pickNextShuffleBag(media, current, remainingShuffleQueue)
+                            current = next.first
+                            remainingShuffleQueue = next.second
                         },
                         onAdd = { picker.launch(arrayOf("image/*", "video/*")) }
                     )
@@ -198,14 +230,20 @@ fun DailyFireApp() {
                         onAdd = { picker.launch(arrayOf("image/*", "video/*")) },
                         onSelect = {
                             current = it
+                            remainingShuffleQueue = remainingShuffleQueue.filter { uri -> uri != it.uri.toString() }
                             selectedTab = Tab.Home
                         },
                         onDelete = { item ->
                             media = media.filterNot { it.uri == item.uri }
+                            remainingShuffleQueue = remainingShuffleQueue.filter { it != item.uri.toString() }
                             saveMedia(context, media)
 
                             if (current?.uri == item.uri) {
                                 current = media.randomOrNull()
+                                remainingShuffleQueue = media
+                                    .filter { it.uri != current?.uri }
+                                    .shuffled()
+                                    .map { it.uri.toString() }
                             }
                         }
                     )
@@ -228,11 +266,18 @@ fun DailyFireApp() {
                             val imageItem = FireMedia(imageUri, isVideo = false)
 
                             media = (media + imageItem).distinctBy { it.uri.toString() }
+                            remainingShuffleQueue = remainingShuffleQueue + imageItem.uri.toString()
                             saveMedia(context, media)
 
                             if (current == null) {
                                 current = imageItem
                             }
+
+                            Toast.makeText(
+                                context,
+                                "Added to gallery successfully",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     )
                 }
@@ -492,7 +537,7 @@ fun QuotesScreen(
                     reading = reading,
                     onAddToGallery = {
                         onAddReadingToGallery(reading)
-                        status = "Added to gallery: ${reading.title.take(32)}"
+                        status = "Added to gallery successfully"
                     },
                     onDelete = { onDeleteReading(reading) }
                 )
@@ -724,7 +769,7 @@ fun VideoPlayer(uri: Uri, modifier: Modifier = Modifier) {
             val view = LayoutInflater.from(viewContext)
                 .inflate(R.layout.player_view_texture, null) as PlayerView
 
-            view.setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+            view.setShutterBackgroundColor(AndroidColor.TRANSPARENT)
             view.player = player
             view
         },
@@ -821,9 +866,31 @@ fun isVideoUri(context: Context, uri: Uri): Boolean {
     return type.startsWith("video/")
 }
 
-fun randomDifferent(media: List<FireMedia>, current: FireMedia?): FireMedia {
-    if (media.size <= 1) return media.first()
-    return media.filter { it.uri != current?.uri }.random()
+fun pickNextShuffleBag(
+    media: List<FireMedia>,
+    current: FireMedia?,
+    queue: List<String>
+): Pair<FireMedia?, List<String>> {
+    if (media.isEmpty()) return null to emptyList()
+    if (media.size == 1) return media.first() to emptyList()
+
+    val validUris = media.map { it.uri.toString() }.toSet()
+    val currentUri = current?.uri?.toString()
+
+    var cleanQueue = queue.filter { it in validUris && it != currentUri }
+
+    if (cleanQueue.isEmpty()) {
+        cleanQueue = media
+            .filter { it.uri.toString() != currentUri }
+            .shuffled()
+            .map { it.uri.toString() }
+    }
+
+    val nextUri = cleanQueue.first()
+    val nextMedia = media.firstOrNull { it.uri.toString() == nextUri } ?: media.random()
+    val updatedQueue = cleanQueue.drop(1)
+
+    return nextMedia to updatedQueue
 }
 
 fun todayLabel(): String {
@@ -872,6 +939,37 @@ fun saveSavedReadings(context: Context, readings: List<SavedReading>) {
         .edit()
         .putString("saved_readings", array.toString())
         .apply()
+}
+
+fun cleanAaDailyReflection(raw: String): String {
+    val lines = raw
+        .replace("\r", "")
+        .split("\n")
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+
+    if (lines.isEmpty()) return ""
+
+    val shareIndex = lines.indexOfFirst { it.equals("Share", ignoreCase = true) }
+    val beforeShare = if (shareIndex >= 0) lines.take(shareIndex) else lines
+
+    val startIndex = beforeShare.indexOfFirst { line ->
+        val upper = line.uppercase(Locale.getDefault())
+        upper == line &&
+            upper.length >= 6 &&
+            !upper.contains("DAILY REFLECTION") &&
+            !upper.contains("ALCOHOLICS ANONYMOUS") &&
+            !upper.contains("SEARCH") &&
+            !upper.contains("MENU")
+    }
+
+    val cleaned = if (startIndex >= 0) {
+        beforeShare.drop(startIndex)
+    } else {
+        beforeShare
+    }
+
+    return cleaned.joinToString("\n\n").trim()
 }
 
 fun createReadingImage(context: Context, reading: SavedReading): Uri {
