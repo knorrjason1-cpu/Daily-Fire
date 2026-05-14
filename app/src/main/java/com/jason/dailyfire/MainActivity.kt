@@ -444,7 +444,7 @@ fun VideoPlayer(uri: Uri, modifier: Modifier = Modifier) {
             val view = LayoutInflater.from(viewContext)
                 .inflate(R.layout.player_view_texture, null) as PlayerView
 
-            view.keepContentOnPlayerReset = true
+          
             view.setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
             view.player = player
             view
