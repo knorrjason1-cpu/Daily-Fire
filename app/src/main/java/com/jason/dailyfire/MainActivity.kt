@@ -364,7 +364,7 @@ fun VideoPlayer(uri: Uri, modifier: Modifier = Modifier) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(uri))
             repeatMode = Player.REPEAT_MODE_ONE
-            volume = 0f
+            volume = 1f
             prepare()
             playWhenReady = true
         }
