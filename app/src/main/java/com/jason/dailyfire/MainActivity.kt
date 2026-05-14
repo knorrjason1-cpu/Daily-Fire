@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.view.LayoutInflater
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -13,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,8 +44,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -52,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -125,7 +128,7 @@ fun DailyFireApp() {
                         media = current,
                         onShuffle = {
                             if (media.isNotEmpty()) {
-                                current = media.random()
+                                current = randomDifferent(media, current)
                             }
                         },
                         onAdd = { picker.launch(arrayOf("image/*", "video/*")) }
@@ -192,7 +195,9 @@ fun HomeScreen(media: FireMedia?, onShuffle: () -> Unit, onAdd: () -> Unit) {
                             )
                         )
                     )
-                    .clickable { onShuffle() }
+                    .pointerInput(media.uri.toString()) {
+                        detectTapGestures(onTap = { onShuffle() })
+                    }
             )
 
             Column(
@@ -429,19 +434,23 @@ fun VideoPlayer(uri: Uri, modifier: Modifier = Modifier) {
             lifecycleOwner.lifecycle.removeObserver(observer)
             player.playWhenReady = false
             player.stop()
+            player.clearVideoSurface()
             player.release()
         }
     }
 
     AndroidView(
-        factory = {
-            PlayerView(it).apply {
-                useController = false
-                this.player = player
-            }
+        factory = { viewContext ->
+            val view = LayoutInflater.from(viewContext)
+                .inflate(R.layout.player_view_texture, null) as PlayerView
+
+            view.keepContentOnPlayerReset = true
+            view.setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+            view.player = player
+            view
         },
-        update = {
-            it.player = player
+        update = { view ->
+            view.player = player
         },
         modifier = modifier
     )
@@ -531,4 +540,9 @@ fun saveMedia(context: Context, media: List<FireMedia>) {
 fun isVideoUri(context: Context, uri: Uri): Boolean {
     val type = context.contentResolver.getType(uri).orEmpty()
     return type.startsWith("video/")
+}
+
+fun randomDifferent(media: List<FireMedia>, current: FireMedia?): FireMedia {
+    if (media.size <= 1) return media.first()
+    return media.filter { it.uri != current?.uri }.random()
 }
