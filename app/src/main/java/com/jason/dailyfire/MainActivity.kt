@@ -91,7 +91,9 @@ fun DailyFireApp() {
     var current by remember { mutableStateOf(media.randomOrNull()) }
 
     LaunchedEffect(media.size) {
-        if (current == null && media.isNotEmpty()) current = media.random()
+        if (current == null && media.isNotEmpty()) {
+            current = media.random()
+        }
     }
 
     val picker = rememberLauncherForActivityResult(
@@ -103,7 +105,9 @@ fun DailyFireApp() {
                     uri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                // Some providers do not allow persistable permissions.
+            }
         }
 
         val added = uris.map { FireMedia(it, isVideoUri(context, it)) }
@@ -140,6 +144,14 @@ fun DailyFireApp() {
                         onSelect = {
                             current = it
                             selectedTab = Tab.Home
+                        },
+                        onDelete = { item ->
+                            media = media.filterNot { it.uri == item.uri }
+                            saveMedia(context, media)
+
+                            if (current?.uri == item.uri) {
+                                current = media.randomOrNull()
+                            }
                         }
                     )
 
@@ -171,15 +183,19 @@ fun HomeScreen(media: FireMedia?, onShuffle: () -> Unit, onAdd: () -> Unit) {
         if (media == null) {
             EmptyHome(onAdd)
         } else {
+            val mediaModifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 92.dp)
+
             key(media.uri.toString()) {
                 if (media.isVideo) {
-                    VideoPlayer(uri = media.uri, modifier = Modifier.fillMaxSize())
+                    VideoPlayer(uri = media.uri, modifier = mediaModifier)
                 } else {
                     AsyncImage(
                         model = media.uri,
                         contentDescription = "Daily Fire image",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                        contentScale = ContentScale.Fit,
+                        modifier = mediaModifier
                     )
                 }
             }
@@ -187,11 +203,12 @@ fun HomeScreen(media: FireMedia?, onShuffle: () -> Unit, onAdd: () -> Unit) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .padding(bottom = 92.dp)
                     .background(
                         Brush.verticalGradient(
                             listOf(
                                 Color.Transparent,
-                                Color.Black.copy(alpha = 0.82f)
+                                Color.Black.copy(alpha = 0.45f)
                             )
                         )
                     )
@@ -199,19 +216,6 @@ fun HomeScreen(media: FireMedia?, onShuffle: () -> Unit, onAdd: () -> Unit) {
                         detectTapGestures(onTap = { onShuffle() })
                     }
             )
-
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 24.dp, end = 24.dp, bottom = 104.dp)
-            ) {
-                Text(
-                    "DAILY FIRE",
-                    color = Color.White,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
         }
     }
 }
@@ -242,7 +246,12 @@ fun EmptyHome(onAdd: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun GalleryScreen(media: List<FireMedia>, onAdd: () -> Unit, onSelect: (FireMedia) -> Unit) {
+fun GalleryScreen(
+    media: List<FireMedia>,
+    onAdd: () -> Unit,
+    onSelect: (FireMedia) -> Unit,
+    onDelete: (FireMedia) -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -294,6 +303,19 @@ fun GalleryScreen(media: List<FireMedia>, onAdd: () -> Unit, onSelect: (FireMedi
                             ) {
                                 Text("▶", color = Color.White)
                             }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(6.dp)
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.72f))
+                                .clickable { onDelete(item) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("×", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -444,7 +466,6 @@ fun VideoPlayer(uri: Uri, modifier: Modifier = Modifier) {
             val view = LayoutInflater.from(viewContext)
                 .inflate(R.layout.player_view_texture, null) as PlayerView
 
-          
             view.setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
             view.player = player
             view
