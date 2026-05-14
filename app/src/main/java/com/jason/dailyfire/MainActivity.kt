@@ -42,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,11 +59,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import coil.compose.AsyncImage
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,10 +102,14 @@ fun DailyFireApp() {
                 )
             } catch (_: Exception) {}
         }
+
         val added = uris.map { FireMedia(it, isVideoUri(context, it)) }
         media = (media + added).distinctBy { it.uri.toString() }
         saveMedia(context, media)
-        if (current == null && media.isNotEmpty()) current = media.random()
+
+        if (current == null && media.isNotEmpty()) {
+            current = media.random()
+        }
     }
 
     MaterialTheme {
@@ -112,13 +120,17 @@ fun DailyFireApp() {
                         url = webUrl!!,
                         onBack = { webUrl = null }
                     )
+
                     selectedTab == Tab.Home -> HomeScreen(
                         media = current,
                         onShuffle = {
-                            if (media.isNotEmpty()) current = media.random()
+                            if (media.isNotEmpty()) {
+                                current = media.random()
+                            }
                         },
                         onAdd = { picker.launch(arrayOf("image/*", "video/*")) }
                     )
+
                     selectedTab == Tab.Gallery -> GalleryScreen(
                         media = media,
                         onAdd = { picker.launch(arrayOf("image/*", "video/*")) },
@@ -127,6 +139,7 @@ fun DailyFireApp() {
                             selectedTab = Tab.Home
                         }
                     )
+
                     selectedTab == Tab.Quotes -> QuotesScreen(
                         onOpenAa = { webUrl = "https://www.aa.org/daily-reflections" },
                         onOpenNa = { webUrl = "https://www.jftna.org/" }
@@ -151,38 +164,48 @@ fun HomeScreen(media: FireMedia?, onShuffle: () -> Unit, onAdd: () -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .clickable { onShuffle() }
     ) {
         if (media == null) {
             EmptyHome(onAdd)
         } else {
-            if (media.isVideo) {
-                VideoPlayer(uri = media.uri, modifier = Modifier.fillMaxSize())
-            } else {
-                AsyncImage(
-                    model = media.uri,
-                    contentDescription = "Daily Fire image",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
+            key(media.uri.toString()) {
+                if (media.isVideo) {
+                    VideoPlayer(uri = media.uri, modifier = Modifier.fillMaxSize())
+                } else {
+                    AsyncImage(
+                        model = media.uri,
+                        contentDescription = "Daily Fire image",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
+
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
-                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))
+                            listOf(
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.82f)
+                            )
                         )
                     )
+                    .clickable { onShuffle() }
             )
+
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = 24.dp, end = 24.dp, bottom = 104.dp)
             ) {
-                Text("DAILY FIRE", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-                Text("Tap anywhere to shuffle", color = Color.White.copy(alpha = 0.86f), fontSize = 26.sp, fontWeight = FontWeight.Black)
+                Text(
+                    "DAILY FIRE",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
@@ -228,7 +251,9 @@ fun GalleryScreen(media: List<FireMedia>, onAdd: () -> Unit, onSelect: (FireMedi
             }
             FireButton("Add", onAdd)
         }
+
         Spacer(Modifier.height(18.dp))
+
         if (media.isEmpty()) {
             EmptyGallery(onAdd)
         } else {
@@ -252,6 +277,7 @@ fun GalleryScreen(media: List<FireMedia>, onAdd: () -> Unit, onSelect: (FireMedi
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
                         )
+
                         if (item.isVideo) {
                             Box(
                                 modifier = Modifier
@@ -260,7 +286,9 @@ fun GalleryScreen(media: List<FireMedia>, onAdd: () -> Unit, onSelect: (FireMedi
                                     .clip(CircleShape)
                                     .background(Color.Black.copy(alpha = 0.55f)),
                                 contentAlignment = Alignment.Center
-                            ) { Text("▶", color = Color.White) }
+                            ) {
+                                Text("▶", color = Color.White)
+                            }
                         }
                     }
                 }
@@ -332,7 +360,11 @@ fun ReadingCard(title: String, subtitle: String, onClick: () -> Unit) {
 
 @Composable
 fun WebReadingScreen(url: String, onBack: () -> Unit) {
-    Column(Modifier.fillMaxSize().background(Color.Black)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -344,6 +376,7 @@ fun WebReadingScreen(url: String, onBack: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Text("Daily Reading", color = Color.White, fontWeight = FontWeight.Bold)
         }
+
         AndroidView(
             factory = { context ->
                 WebView(context).apply {
@@ -360,6 +393,8 @@ fun WebReadingScreen(url: String, onBack: () -> Unit) {
 @Composable
 fun VideoPlayer(uri: Uri, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
     val player = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(uri))
@@ -369,15 +404,44 @@ fun VideoPlayer(uri: Uri, modifier: Modifier = Modifier) {
             playWhenReady = true
         }
     }
-    DisposableEffect(player) {
-        onDispose { player.release() }
+
+    DisposableEffect(player, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE,
+                Lifecycle.Event.ON_STOP -> {
+                    player.playWhenReady = false
+                    player.pause()
+                }
+
+                Lifecycle.Event.ON_RESUME -> {
+                    player.playWhenReady = true
+                    player.play()
+                }
+
+                else -> Unit
+            }
+        }
+
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            player.playWhenReady = false
+            player.stop()
+            player.release()
+        }
     }
+
     AndroidView(
         factory = {
             PlayerView(it).apply {
                 useController = false
                 this.player = player
             }
+        },
+        update = {
+            it.player = player
         },
         modifier = modifier
     )
@@ -390,9 +454,24 @@ fun DailyFireNav(selectedTab: Tab, onTab: (Tab) -> Unit, modifier: Modifier = Mo
         containerColor = Color.Black.copy(alpha = 0.92f),
         contentColor = Color.White
     ) {
-        NavigationBarItem(selected = selectedTab == Tab.Home, onClick = { onTab(Tab.Home) }, icon = { Text("🔥") }, label = { Text("Home") })
-        NavigationBarItem(selected = selectedTab == Tab.Gallery, onClick = { onTab(Tab.Gallery) }, icon = { Text("▦") }, label = { Text("Gallery") })
-        NavigationBarItem(selected = selectedTab == Tab.Quotes, onClick = { onTab(Tab.Quotes) }, icon = { Text("✦") }, label = { Text("Quotes") })
+        NavigationBarItem(
+            selected = selectedTab == Tab.Home,
+            onClick = { onTab(Tab.Home) },
+            icon = { Text("🔥") },
+            label = { Text("Home") }
+        )
+        NavigationBarItem(
+            selected = selectedTab == Tab.Gallery,
+            onClick = { onTab(Tab.Gallery) },
+            icon = { Text("▦") },
+            label = { Text("Gallery") }
+        )
+        NavigationBarItem(
+            selected = selectedTab == Tab.Quotes,
+            onClick = { onTab(Tab.Quotes) },
+            icon = { Text("✦") },
+            label = { Text("Quotes") }
+        )
     }
 }
 
@@ -400,7 +479,10 @@ fun DailyFireNav(selectedTab: Tab, onTab: (Tab) -> Unit, modifier: Modifier = Mo
 fun FireButton(text: String, onClick: () -> Unit) {
     Button(
         onClick = onClick,
-        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF6A00), contentColor = Color.Black),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color(0xFFFF6A00),
+            contentColor = Color.Black
+        ),
         shape = RoundedCornerShape(999.dp)
     ) {
         Text(text, fontWeight = FontWeight.Bold)
@@ -412,7 +494,15 @@ fun FlameMark(modifier: Modifier = Modifier.size(68.dp)) {
     Box(
         modifier = modifier
             .clip(CircleShape)
-            .background(Brush.radialGradient(listOf(Color(0xFFFFA040), Color(0xFFFF5A00), Color(0xFF241000)))),
+            .background(
+                Brush.radialGradient(
+                    listOf(
+                        Color(0xFFFFA040),
+                        Color(0xFFFF5A00),
+                        Color(0xFF241000)
+                    )
+                )
+            ),
         contentAlignment = Alignment.Center
     ) {
         Text("🔥", fontSize = 30.sp)
@@ -428,7 +518,10 @@ fun loadMedia(context: Context): List<FireMedia> {
 }
 
 fun saveMedia(context: Context, media: List<FireMedia>) {
-    val encoded = media.map { if (it.isVideo) "video|${it.uri}" else "image|${it.uri}" }.toSet()
+    val encoded = media.map {
+        if (it.isVideo) "video|${it.uri}" else "image|${it.uri}"
+    }.toSet()
+
     context.getSharedPreferences("daily_fire", Context.MODE_PRIVATE)
         .edit()
         .putStringSet("media", encoded)
