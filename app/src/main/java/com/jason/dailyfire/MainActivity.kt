@@ -1,15 +1,21 @@
-
-
 package com.jason.dailyfire
 
+import android.Manifest
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
 import android.graphics.Paint
 import android.graphics.RectF
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.text.Layout
 import android.text.StaticLayout
@@ -27,6 +33,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -76,6 +83,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -90,14 +100,55 @@ import org.json.JSONTokener
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.math.max
 
+private const val NOTIFICATION_CHANNEL_ID = "daily_fire_channel"
+private const val DAILY_FIRE_ALARM_ACTION = "com.jason.dailyfire.DAILY_FIRE_NOTIFICATION"
+private const val DAILY_FIRE_NOTIFICATION_ID = 7420
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        createDailyFireNotificationChannel(this)
+        scheduleDailyFireNotification(this)
         setContent { DailyFireApp() }
+    }
+}
+
+class DailyFireNotificationReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent?) {
+        if (intent?.action != DAILY_FIRE_ALARM_ACTION) return
+
+        createDailyFireNotificationChannel(context)
+
+        val openAppIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+
+        val openPendingIntent = PendingIntent.getActivity(
+            context,
+            2001,
+            openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Daily Fire")
+            .setContentText("Your Daily Fire is ready 🔥")
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(openPendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        if (Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        ) {
+            NotificationManagerCompat.from(context).notify(DAILY_FIRE_NOTIFICATION_ID, notification)
+        }
     }
 }
 
@@ -115,41 +166,75 @@ data class SavedReading(
 @Composable
 fun DailyFireApp() {
     val context = LocalContext.current
+
     var media by remember { mutableStateOf(loadMedia(context)) }
+    var favoriteMediaUris by remember { mutableStateOf(loadFavoriteMediaUris(context)) }
+    var favoritesOnly by remember { mutableStateOf(loadFavoritesOnly(context)) }
+
     var savedReadings by remember { mutableStateOf(loadSavedReadings(context)) }
+    var favoriteReadingKeys by remember { mutableStateOf(loadFavoriteReadingKeys(context)) }
+    var readingFavoritesOnly by remember { mutableStateOf(false) }
+
     var selectedTab by remember { mutableStateOf(Tab.Home) }
     var webUrl by remember { mutableStateOf<String?>(null) }
-    var current by remember { mutableStateOf(media.randomOrNull()) }
 
-    // Queue of unwatched media URI strings.
-    // This makes shuffle feel random, but prevents repeats until everything has played once.
+    val activeMedia = remember(media, favoriteMediaUris, favoritesOnly) {
+        if (favoritesOnly) media.filter { it.uri.toString() in favoriteMediaUris } else media
+    }
+
+    var current by remember { mutableStateOf(activeMedia.randomOrNull()) }
+    var history by remember { mutableStateOf<List<String>>(emptyList()) }
+
     var remainingShuffleQueue by remember {
         mutableStateOf(
-            media
+            activeMedia
                 .filter { it.uri != current?.uri }
                 .shuffled()
                 .map { it.uri.toString() }
         )
     }
 
-    LaunchedEffect(media.map { it.uri.toString() }) {
-        if (current == null && media.isNotEmpty()) {
-            current = media.random()
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* no-op */ }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
 
-        val validUris = media.map { it.uri.toString() }.toSet()
-        val currentUri = current?.uri?.toString()
+    LaunchedEffect(activeMedia.map { it.uri.toString() }, favoritesOnly) {
+        if (activeMedia.isEmpty()) {
+            current = null
+            remainingShuffleQueue = emptyList()
+            history = emptyList()
+        } else if (current == null || activeMedia.none { it.uri == current?.uri }) {
+            current = activeMedia.random()
+            remainingShuffleQueue = activeMedia
+                .filter { it.uri != current?.uri }
+                .shuffled()
+                .map { it.uri.toString() }
+            history = emptyList()
+        } else {
+            val validUris = activeMedia.map { it.uri.toString() }.toSet()
+            val currentUri = current?.uri?.toString()
 
-        remainingShuffleQueue = remainingShuffleQueue
-            .filter { it in validUris && it != currentUri }
+            remainingShuffleQueue = remainingShuffleQueue
+                .filter { it in validUris && it != currentUri }
 
-        val queued = remainingShuffleQueue.toSet()
-        val newUnqueuedItems = media
-            .filter { it.uri.toString() !in queued && it.uri.toString() != currentUri }
-            .map { it.uri.toString() }
-            .shuffled()
+            history = history.filter { it in validUris && it != currentUri }
 
-        remainingShuffleQueue = remainingShuffleQueue + newUnqueuedItems
+            val queued = remainingShuffleQueue.toSet()
+            val newUnqueuedItems = activeMedia
+                .filter { it.uri.toString() !in queued && it.uri.toString() != currentUri }
+                .map { it.uri.toString() }
+                .shuffled()
+
+            remainingShuffleQueue = remainingShuffleQueue + newUnqueuedItems
+        }
     }
 
     val picker = rememberLauncherForActivityResult(
@@ -172,6 +257,39 @@ fun DailyFireApp() {
 
         if (current == null && media.isNotEmpty()) {
             current = media.random()
+        }
+    }
+
+    fun goNext() {
+        val currentUri = current?.uri?.toString()
+        val next = pickNextShuffleBag(activeMedia, current, remainingShuffleQueue)
+
+        if (next.first != null && currentUri != null) {
+            history = history + currentUri
+        }
+
+        current = next.first
+        remainingShuffleQueue = next.second
+    }
+
+    fun goPrevious() {
+        if (history.isEmpty()) {
+            goNext()
+            return
+        }
+
+        val previousUri = history.last()
+        val previousMedia = activeMedia.firstOrNull { it.uri.toString() == previousUri }
+
+        if (previousMedia != null) {
+            current?.let { now ->
+                remainingShuffleQueue = listOf(now.uri.toString()) + remainingShuffleQueue
+            }
+            current = previousMedia
+            history = history.dropLast(1)
+        } else {
+            history = history.dropLast(1)
+            goNext()
         }
     }
 
@@ -217,16 +335,33 @@ fun DailyFireApp() {
 
                     selectedTab == Tab.Home -> HomeScreen(
                         media = current,
-                        onShuffle = {
-                            val next = pickNextShuffleBag(media, current, remainingShuffleQueue)
-                            current = next.first
-                            remainingShuffleQueue = next.second
+                        isFavorite = current?.uri?.toString() in favoriteMediaUris,
+                        favoritesOnly = favoritesOnly,
+                        onSwipeNext = { goNext() },
+                        onSwipePrevious = { goPrevious() },
+                        onAdd = { picker.launch(arrayOf("image/*", "video/*")) },
+                        onToggleFavorite = {
+                            current?.let { item ->
+                                val uri = item.uri.toString()
+                                favoriteMediaUris = if (uri in favoriteMediaUris) {
+                                    favoriteMediaUris - uri
+                                } else {
+                                    favoriteMediaUris + uri
+                                }
+                                saveFavoriteMediaUris(context, favoriteMediaUris)
+                            }
                         },
-                        onAdd = { picker.launch(arrayOf("image/*", "video/*")) }
+                        onToggleFavoritesOnly = {
+                            favoritesOnly = !favoritesOnly
+                            saveFavoritesOnly(context, favoritesOnly)
+                        }
                     )
 
                     selectedTab == Tab.Gallery -> GalleryScreen(
-                        media = media,
+                        media = if (favoritesOnly) media.filter { it.uri.toString() in favoriteMediaUris } else media,
+                        allMediaCount = media.size,
+                        favoritesOnly = favoritesOnly,
+                        favoriteMediaUris = favoriteMediaUris,
                         onAdd = { picker.launch(arrayOf("image/*", "video/*")) },
                         onSelect = {
                             current = it
@@ -235,31 +370,57 @@ fun DailyFireApp() {
                         },
                         onDelete = { item ->
                             media = media.filterNot { it.uri == item.uri }
+                            favoriteMediaUris = favoriteMediaUris - item.uri.toString()
                             remainingShuffleQueue = remainingShuffleQueue.filter { it != item.uri.toString() }
                             saveMedia(context, media)
+                            saveFavoriteMediaUris(context, favoriteMediaUris)
 
                             if (current?.uri == item.uri) {
-                                current = media.randomOrNull()
-                                remainingShuffleQueue = media
+                                val updatedActive = if (favoritesOnly) {
+                                    media.filter { it.uri.toString() in favoriteMediaUris }
+                                } else {
+                                    media
+                                }
+
+                                current = updatedActive.randomOrNull()
+                                remainingShuffleQueue = updatedActive
                                     .filter { it.uri != current?.uri }
                                     .shuffled()
                                     .map { it.uri.toString() }
                             }
+                        },
+                        onToggleFavorite = { item ->
+                            val uri = item.uri.toString()
+                            favoriteMediaUris = if (uri in favoriteMediaUris) {
+                                favoriteMediaUris - uri
+                            } else {
+                                favoriteMediaUris + uri
+                            }
+                            saveFavoriteMediaUris(context, favoriteMediaUris)
+                        },
+                        onToggleFavoritesOnly = {
+                            favoritesOnly = !favoritesOnly
+                            saveFavoritesOnly(context, favoritesOnly)
                         }
                     )
 
                     selectedTab == Tab.Quotes -> QuotesScreen(
                         savedReadings = savedReadings,
+                        favoriteReadingKeys = favoriteReadingKeys,
+                        readingFavoritesOnly = readingFavoritesOnly,
                         onOpenAa = { webUrl = "https://www.aa.org/daily-reflections" },
                         onOpenNa = { webUrl = "https://www.jftna.org/" },
                         onDeleteReading = { reading ->
+                            val key = reading.favoriteKey()
                             savedReadings = savedReadings.filterNot {
                                 it.title == reading.title &&
                                     it.source == reading.source &&
                                     it.dateSaved == reading.dateSaved &&
                                     it.text == reading.text
                             }
+                            favoriteReadingKeys = favoriteReadingKeys - key
                             saveSavedReadings(context, savedReadings)
+                            saveFavoriteReadingKeys(context, favoriteReadingKeys)
                         },
                         onAddReadingToGallery = { reading ->
                             val imageUri = createReadingImage(context, reading)
@@ -278,6 +439,18 @@ fun DailyFireApp() {
                                 "Added to gallery successfully",
                                 Toast.LENGTH_SHORT
                             ).show()
+                        },
+                        onToggleReadingFavorite = { reading ->
+                            val key = reading.favoriteKey()
+                            favoriteReadingKeys = if (key in favoriteReadingKeys) {
+                                favoriteReadingKeys - key
+                            } else {
+                                favoriteReadingKeys + key
+                            }
+                            saveFavoriteReadingKeys(context, favoriteReadingKeys)
+                        },
+                        onToggleReadingFavoritesOnly = {
+                            readingFavoritesOnly = !readingFavoritesOnly
                         }
                     )
                 }
@@ -295,14 +468,27 @@ fun DailyFireApp() {
 }
 
 @Composable
-fun HomeScreen(media: FireMedia?, onShuffle: () -> Unit, onAdd: () -> Unit) {
+fun HomeScreen(
+    media: FireMedia?,
+    isFavorite: Boolean,
+    favoritesOnly: Boolean,
+    onSwipeNext: () -> Unit,
+    onSwipePrevious: () -> Unit,
+    onAdd: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onToggleFavoritesOnly: () -> Unit
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
         if (media == null) {
-            EmptyHome(onAdd)
+            EmptyHome(
+                onAdd = onAdd,
+                favoritesOnly = favoritesOnly,
+                onToggleFavoritesOnly = onToggleFavoritesOnly
+            )
         } else {
             val mediaModifier = Modifier
                 .fillMaxSize()
@@ -334,15 +520,54 @@ fun HomeScreen(media: FireMedia?, onShuffle: () -> Unit, onAdd: () -> Unit) {
                         )
                     )
                     .pointerInput(media.uri.toString()) {
-                        detectTapGestures(onTap = { onShuffle() })
+                        var totalDrag = 0f
+                        detectVerticalDragGestures(
+                            onVerticalDrag = { _, dragAmount ->
+                                totalDrag += dragAmount
+                            },
+                            onDragEnd = {
+                                when {
+                                    totalDrag < -80f -> onSwipeNext()
+                                    totalDrag > 80f -> onSwipePrevious()
+                                    else -> onSwipeNext() // tap-like small movement fallback
+                                }
+                                totalDrag = 0f
+                            },
+                            onDragCancel = {
+                                totalDrag = 0f
+                            }
+                        )
+                    }
+                    .pointerInput(media.uri.toString() + "_tap") {
+                        detectTapGestures(onTap = { onSwipeNext() })
                     }
             )
+
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 42.dp, end = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SmallPillButton(
+                    text = if (favoritesOnly) "★ Only" else "All",
+                    onClick = onToggleFavoritesOnly
+                )
+                SmallPillButton(
+                    text = if (isFavorite) "★" else "☆",
+                    onClick = onToggleFavorite
+                )
+            }
         }
     }
 }
 
 @Composable
-fun EmptyHome(onAdd: () -> Unit) {
+fun EmptyHome(
+    onAdd: () -> Unit,
+    favoritesOnly: Boolean,
+    onToggleFavoritesOnly: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -355,13 +580,19 @@ fun EmptyHome(onAdd: () -> Unit) {
         Text("Daily Fire", color = Color.White, fontSize = 42.sp, fontWeight = FontWeight.Black)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Add your first photo or video to start your personal motivation feed.",
+            if (favoritesOnly) {
+                "No favorite media yet. Turn off favorites-only or star some media."
+            } else {
+                "Add your first photo or video to start your personal motivation feed."
+            },
             color = Color.White.copy(alpha = 0.72f),
             textAlign = TextAlign.Center,
             fontSize = 16.sp
         )
         Spacer(Modifier.height(28.dp))
         FireButton("Add Media", onAdd)
+        Spacer(Modifier.height(12.dp))
+        FireButton(if (favoritesOnly) "Show All" else "Favorites Only", onToggleFavoritesOnly)
     }
 }
 
@@ -369,9 +600,14 @@ fun EmptyHome(onAdd: () -> Unit) {
 @Composable
 fun GalleryScreen(
     media: List<FireMedia>,
+    allMediaCount: Int,
+    favoritesOnly: Boolean,
+    favoriteMediaUris: Set<String>,
     onAdd: () -> Unit,
     onSelect: (FireMedia) -> Unit,
-    onDelete: (FireMedia) -> Unit
+    onDelete: (FireMedia) -> Unit,
+    onToggleFavorite: (FireMedia) -> Unit,
+    onToggleFavoritesOnly: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -382,8 +618,13 @@ fun GalleryScreen(
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
                 Text("Gallery", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Black)
-                Text("${media.size} saved fire drops", color = Color.White.copy(alpha = 0.6f))
+                Text(
+                    if (favoritesOnly) "${media.size} favorite fire drops" else "$allMediaCount saved fire drops",
+                    color = Color.White.copy(alpha = 0.6f)
+                )
             }
+            FireButton(if (favoritesOnly) "All" else "★ Only", onToggleFavoritesOnly)
+            Spacer(Modifier.width(8.dp))
             FireButton("Add", onAdd)
         }
 
@@ -428,6 +669,24 @@ fun GalleryScreen(
 
                         Box(
                             modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(6.dp)
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.72f))
+                                .clickable { onToggleFavorite(item) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                if (item.uri.toString() in favoriteMediaUris) "★" else "☆",
+                                color = Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Box(
+                            modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(6.dp)
                                 .size(28.dp)
@@ -452,7 +711,7 @@ fun EmptyGallery(onAdd: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("No media yet", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text("No media here", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
         Text("Upload photos and videos that hit hard.", color = Color.White.copy(alpha = 0.65f))
         Spacer(Modifier.height(24.dp))
@@ -464,13 +723,23 @@ fun EmptyGallery(onAdd: () -> Unit) {
 @Composable
 fun QuotesScreen(
     savedReadings: List<SavedReading>,
+    favoriteReadingKeys: Set<String>,
+    readingFavoritesOnly: Boolean,
     onOpenAa: () -> Unit,
     onOpenNa: () -> Unit,
     onDeleteReading: (SavedReading) -> Unit,
-    onAddReadingToGallery: (SavedReading) -> Unit
+    onAddReadingToGallery: (SavedReading) -> Unit,
+    onToggleReadingFavorite: (SavedReading) -> Unit,
+    onToggleReadingFavoritesOnly: () -> Unit
 ) {
     val scrollState = rememberScrollState()
     var status by remember { mutableStateOf("") }
+
+    val visibleReadings = if (readingFavoritesOnly) {
+        savedReadings.filter { it.favoriteKey() in favoriteReadingKeys }
+    } else {
+        savedReadings
+    }
 
     Column(
         modifier = Modifier
@@ -503,20 +772,23 @@ fun QuotesScreen(
 
         Spacer(Modifier.height(32.dp))
 
-        Text(
-            "Saved Quotes & Readings",
-            color = Color.White,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Black
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        Text(
-            "Tap to expand. Long-press to add the full reading as an image to your gallery.",
-            color = Color.White.copy(alpha = 0.52f),
-            fontSize = 14.sp
-        )
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Saved Quotes & Readings",
+                    color = Color.White,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Black
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Tap to expand. Long-press to add as image.",
+                    color = Color.White.copy(alpha = 0.52f),
+                    fontSize = 14.sp
+                )
+            }
+            FireButton(if (readingFavoritesOnly) "All" else "★ Only", onToggleReadingFavoritesOnly)
+        }
 
         if (status.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
@@ -525,21 +797,27 @@ fun QuotesScreen(
 
         Spacer(Modifier.height(14.dp))
 
-        if (savedReadings.isEmpty()) {
+        if (visibleReadings.isEmpty()) {
             Text(
-                "Nothing saved yet. Open a reading and press Save.",
+                if (readingFavoritesOnly) {
+                    "No favorite readings yet."
+                } else {
+                    "Nothing saved yet. Open a reading and press Save."
+                },
                 color = Color.White.copy(alpha = 0.55f),
                 fontSize = 15.sp
             )
         } else {
-            savedReadings.forEach { reading ->
+            visibleReadings.forEach { reading ->
                 SavedReadingCard(
                     reading = reading,
+                    isFavorite = reading.favoriteKey() in favoriteReadingKeys,
                     onAddToGallery = {
                         onAddReadingToGallery(reading)
                         status = "Added to gallery successfully"
                     },
-                    onDelete = { onDeleteReading(reading) }
+                    onDelete = { onDeleteReading(reading) },
+                    onToggleFavorite = { onToggleReadingFavorite(reading) }
                 )
                 Spacer(Modifier.height(14.dp))
             }
@@ -575,8 +853,10 @@ fun ReadingCard(title: String, subtitle: String, onClick: () -> Unit) {
 @Composable
 fun SavedReadingCard(
     reading: SavedReading,
+    isFavorite: Boolean,
     onAddToGallery: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onToggleFavorite: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -604,7 +884,7 @@ fun SavedReadingCard(
                     color = Color.White,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Black,
-                    modifier = Modifier.padding(end = 34.dp)
+                    modifier = Modifier.padding(end = 74.dp)
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -627,17 +907,38 @@ fun SavedReadingCard(
                 )
             }
 
-            Box(
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(12.dp)
-                    .size(28.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.72f))
-                    .clickable { onDelete() },
-                contentAlignment = Alignment.Center
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Text("×", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.72f))
+                        .clickable { onToggleFavorite() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        if (isFavorite) "★" else "☆",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.72f))
+                        .clickable { onDelete() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("×", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
@@ -823,6 +1124,21 @@ fun FireButton(text: String, onClick: () -> Unit) {
 }
 
 @Composable
+fun SmallPillButton(text: String, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.Black.copy(alpha = 0.72f),
+            contentColor = Color.White
+        ),
+        shape = RoundedCornerShape(999.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+    ) {
+        Text(text, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+    }
+}
+
+@Composable
 fun FlameMark(modifier: Modifier = Modifier.size(68.dp)) {
     Box(
         modifier = modifier
@@ -939,6 +1255,46 @@ fun saveSavedReadings(context: Context, readings: List<SavedReading>) {
         .edit()
         .putString("saved_readings", array.toString())
         .apply()
+}
+
+fun loadFavoriteMediaUris(context: Context): Set<String> {
+    val prefs = context.getSharedPreferences("daily_fire", Context.MODE_PRIVATE)
+    return prefs.getStringSet("favorite_media_uris", emptySet()).orEmpty()
+}
+
+fun saveFavoriteMediaUris(context: Context, favorites: Set<String>) {
+    context.getSharedPreferences("daily_fire", Context.MODE_PRIVATE)
+        .edit()
+        .putStringSet("favorite_media_uris", favorites)
+        .apply()
+}
+
+fun loadFavoritesOnly(context: Context): Boolean {
+    val prefs = context.getSharedPreferences("daily_fire", Context.MODE_PRIVATE)
+    return prefs.getBoolean("favorites_only", false)
+}
+
+fun saveFavoritesOnly(context: Context, favoritesOnly: Boolean) {
+    context.getSharedPreferences("daily_fire", Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean("favorites_only", favoritesOnly)
+        .apply()
+}
+
+fun loadFavoriteReadingKeys(context: Context): Set<String> {
+    val prefs = context.getSharedPreferences("daily_fire", Context.MODE_PRIVATE)
+    return prefs.getStringSet("favorite_reading_keys", emptySet()).orEmpty()
+}
+
+fun saveFavoriteReadingKeys(context: Context, favorites: Set<String>) {
+    context.getSharedPreferences("daily_fire", Context.MODE_PRIVATE)
+        .edit()
+        .putStringSet("favorite_reading_keys", favorites)
+        .apply()
+}
+
+fun SavedReading.favoriteKey(): String {
+    return "$source|$title|$dateSaved|${text.take(80)}"
 }
 
 fun cleanAaDailyReflection(raw: String): String {
@@ -1088,4 +1444,53 @@ fun safeFileName(input: String): String {
         .trim('_')
 
     return cleaned.take(40).ifBlank { "reading" }
+}
+
+fun createDailyFireNotificationChannel(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val channel = NotificationChannel(
+            NOTIFICATION_CHANNEL_ID,
+            "Daily Fire",
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            description = "Daily Fire reminders"
+        }
+
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(channel)
+    }
+}
+
+fun scheduleDailyFireNotification(context: Context) {
+    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+    val intent = Intent(context, DailyFireNotificationReceiver::class.java).apply {
+        action = DAILY_FIRE_ALARM_ACTION
+    }
+
+    val pendingIntent = PendingIntent.getBroadcast(
+        context,
+        1001,
+        intent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+
+    val calendar = Calendar.getInstance().apply {
+        timeInMillis = System.currentTimeMillis()
+        set(Calendar.HOUR_OF_DAY, 8)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+
+        if (timeInMillis <= System.currentTimeMillis()) {
+            add(Calendar.DAY_OF_YEAR, 1)
+        }
+    }
+
+    alarmManager.setInexactRepeating(
+        AlarmManager.RTC_WAKEUP,
+        calendar.timeInMillis,
+        AlarmManager.INTERVAL_DAY,
+        pendingIntent
+    )
 }
